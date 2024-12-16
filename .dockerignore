@@ -14,3 +14,5 @@ backend/Dockerfile.viewercontroller
 backend/Dockerfile.visualization
 frontend/Dockerfile
 v2/build
+dev-files/
+kubeconfig_*

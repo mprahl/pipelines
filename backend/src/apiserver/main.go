@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/kubeflow/pipelines/backend/src/apiserver/client"
 	"io"
 	"io/ioutil"
 	"math"
@@ -37,18 +36,23 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	apiv1beta1 "github.com/kubeflow/pipelines/backend/api/v1beta1/go_client"
 	apiv2beta1 "github.com/kubeflow/pipelines/backend/api/v2beta1/go_client"
+	"github.com/kubeflow/pipelines/backend/src/apiserver/client"
 	cm "github.com/kubeflow/pipelines/backend/src/apiserver/client_manager"
 	"github.com/kubeflow/pipelines/backend/src/apiserver/common"
 	"github.com/kubeflow/pipelines/backend/src/apiserver/model"
 	"github.com/kubeflow/pipelines/backend/src/apiserver/resource"
 	"github.com/kubeflow/pipelines/backend/src/apiserver/server"
 	"github.com/kubeflow/pipelines/backend/src/apiserver/template"
+	"github.com/kubeflow/pipelines/backend/src/apiserver/webhook"
 	"github.com/kubeflow/pipelines/backend/src/common/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 const (
@@ -57,12 +61,13 @@ const (
 )
 
 var (
-	logLevelFlag       = flag.String("logLevel", "", "Defines the log level for the application.")
-	rpcPortFlag        = flag.String("rpcPortFlag", ":8887", "RPC Port")
-	httpPortFlag       = flag.String("httpPortFlag", ":8888", "Http Proxy Port")
-	configPath         = flag.String("config", "", "Path to JSON file containing config")
-	sampleConfigPath   = flag.String("sampleconfig", "", "Path to samples")
-	collectMetricsFlag = flag.Bool("collectMetricsFlag", true, "Whether to collect Prometheus metrics in API server.")
+	logLevelFlag         = flag.String("logLevel", "", "Defines the log level for the application.")
+	rpcPortFlag          = flag.String("rpcPortFlag", ":8887", "RPC Port")
+	httpPortFlag         = flag.String("httpPortFlag", ":8888", "Http Proxy Port")
+	configPath           = flag.String("config", "", "Path to JSON file containing config")
+	sampleConfigPath     = flag.String("sampleconfig", "", "Path to samples")
+	useKubernetesStorage = flag.Bool("store-in-kubernetes", false, "Store and run pipeline versions in Kubernetes")
+	collectMetricsFlag   = flag.Bool("collectMetricsFlag", true, "Whether to collect Prometheus metrics in API server.")
 )
 
 type RegisterHttpHandlerFromEndpoint func(ctx context.Context, mux *runtime.ServeMux, endpoint string, opts []grpc.DialOption) error
@@ -79,7 +84,7 @@ func main() {
 		template.Launcher = common.GetStringConfig(launcherEnv)
 	}
 
-	clientManager := cm.NewClientManager()
+	clientManager := cm.NewClientManager(*useKubernetesStorage)
 	resourceManager := resource.NewResourceManager(
 		&clientManager,
 		&resource.ResourceManagerOptions{CollectMetrics: *collectMetricsFlag},
@@ -113,9 +118,12 @@ func main() {
 	wg.Add(1)
 	go reconcileSwfCrs(resourceManager, backgroundCtx, &wg)
 	go startRpcServer(resourceManager)
+	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{})))
 	// This is blocking
-	startHttpProxy(resourceManager)
+	startHttpProxy(resourceManager, clientManager.ControllerClient())
+
 	backgroundCancel()
+
 	clientManager.Close()
 	wg.Wait()
 }
@@ -186,7 +194,7 @@ func startRpcServer(resourceManager *resource.ResourceManager) {
 	glog.Info("RPC server started")
 }
 
-func startHttpProxy(resourceManager *resource.ResourceManager) {
+func startHttpProxy(resourceManager *resource.ResourceManager, controllerClient ctrlclient.Client) {
 	glog.Info("Starting Http Proxy")
 
 	ctx := context.Background()
@@ -241,6 +249,15 @@ func startHttpProxy(resourceManager *resource.ResourceManager) {
 
 	// Register a handler for Prometheus to poll.
 	topMux.Handle("/metrics", promhttp.Handler())
+
+	pvValidateWebhook, pvMutateWebhook, err := webhook.NewPipelineVersionWebhook(controllerClient)
+	if err != nil {
+		log.Fatalf("Failed to instantiate the Kubernetes webhook: %v", err)
+	}
+
+	topMux.HandleFunc("/webhooks/validate-pipelineversion", pvValidateWebhook.ServeHTTP)
+
+	topMux.HandleFunc("/webhooks/mutate-pipelineversion", pvMutateWebhook.ServeHTTP)
 
 	http.ListenAndServe(*httpPortFlag, topMux)
 	glog.Info("Http Proxy started")

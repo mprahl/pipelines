@@ -40,7 +40,6 @@ func CreateKubernetesCoreOrFatal(initConnectionTimeout time.Duration, clientPara
 	b := backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = initConnectionTimeout
 	err = backoff.Retry(operation, b)
-
 	if err != nil {
 		glog.Fatalf("Failed to create pod client. Error: %v", err)
 	}

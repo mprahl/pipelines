@@ -88,3 +88,14 @@ local_outputs/
 
 # Ignore debug Driver Dockerfile produced from `make -C backend image_driver_debug`
 backend/Dockerfile.driver-debug
+kubernetes_api/bin
+
+# Local dev environment
+.env
+dsl-input.py
+dsl-output.yaml
+Pipfile
+__debug_bin*
+
+dev-files/
+kubeconfig_*
