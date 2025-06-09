@@ -1,0 +1,310 @@
+apiVersion: pipelines.kubeflow.org/v2beta1
+kind: Pipeline
+metadata:
+  name: iris-pipeline
+  namespace: kubeflow
+spec:
+  displayName: Iris Pipeline
+---
+apiVersion: pipelines.kubeflow.org/v2beta1
+kind: PipelineVersion
+metadata:
+  name: iris-pipeline
+  namespace: kubeflow
+spec:
+  displayName: Iris Pipeline
+  pipelineName: iris-pipeline
+  pipelineSpec:
+    components:
+      comp-create-dataset:
+        executorLabel: exec-create-dataset
+        outputDefinitions:
+          artifacts:
+            iris_dataset:
+              artifactType:
+                schemaTitle: system.Dataset
+                schemaVersion: 0.0.1
+      comp-normalize-dataset:
+        executorLabel: exec-normalize-dataset
+        inputDefinitions:
+          artifacts:
+            input_iris_dataset:
+              artifactType:
+                schemaTitle: system.Dataset
+                schemaVersion: 0.0.1
+          parameters:
+            standard_scaler:
+              parameterType: BOOLEAN
+        outputDefinitions:
+          artifacts:
+            normalized_iris_dataset:
+              artifactType:
+                schemaTitle: system.Dataset
+                schemaVersion: 0.0.1
+      comp-train-model:
+        executorLabel: exec-train-model
+        inputDefinitions:
+          artifacts:
+            normalized_iris_dataset:
+              artifactType:
+                schemaTitle: system.Dataset
+                schemaVersion: 0.0.1
+          parameters:
+            n_neighbors:
+              parameterType: NUMBER_INTEGER
+        outputDefinitions:
+          artifacts:
+            metrics:
+              artifactType:
+                schemaTitle: system.ClassificationMetrics
+                schemaVersion: 0.0.1
+            model:
+              artifactType:
+                schemaTitle: system.Model
+                schemaVersion: 0.0.1
+    deploymentSpec:
+      executors:
+        exec-create-dataset:
+          container:
+            args:
+            - --executor_input
+            - '{{$}}'
+            - --function_to_execute
+            - create_dataset
+            command:
+            - sh
+            - -c
+            - |2
+
+              if ! [ -x "$(command -v pip)" ]; then
+                  python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+              fi
+
+              PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<"3.9"'  &&  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.0' && "$0" "$@"
+            - sh
+            - -ec
+            - |
+              program_path=$(mktemp -d)
+
+              printf "%s" "$0" > "$program_path/ephemeral_component.py"
+              _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+            - |2+
+
+              import kfp
+              from kfp import dsl
+              from kfp.dsl import *
+              from typing import *
+
+              def create_dataset(iris_dataset: Output[Dataset]):
+                  import pandas as pd
+
+                  csv_url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data'
+                  col_names = [
+                      'Sepal_Length', 'Sepal_Width', 'Petal_Length', 'Petal_Width', 'Labels'
+                  ]
+                  df = pd.read_csv(csv_url, names=col_names)
+
+                  with open(iris_dataset.path, 'w') as f:
+                      df.to_csv(f)
+
+            image: registry.access.redhat.com/ubi9/python-311:latest
+        exec-normalize-dataset:
+          container:
+            args:
+            - --executor_input
+            - '{{$}}'
+            - --function_to_execute
+            - normalize_dataset
+            command:
+            - sh
+            - -c
+            - |2
+
+              if ! [ -x "$(command -v pip)" ]; then
+                  python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+              fi
+
+              PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<"3.9"'  &&  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.0' 'scikit-learn==1.4.0' && "$0" "$@"
+            - sh
+            - -ec
+            - |
+              program_path=$(mktemp -d)
+
+              printf "%s" "$0" > "$program_path/ephemeral_component.py"
+              _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+            - |2+
+
+              import kfp
+              from kfp import dsl
+              from kfp.dsl import *
+              from typing import *
+
+              def normalize_dataset(
+                  input_iris_dataset: Input[Dataset],
+                  normalized_iris_dataset: Output[Dataset],
+                  standard_scaler: bool,
+              ):
+
+                  import pandas as pd
+                  from sklearn.preprocessing import MinMaxScaler
+                  from sklearn.preprocessing import StandardScaler
+
+                  with open(input_iris_dataset.path) as f:
+                      df = pd.read_csv(f)
+                  labels = df.pop('Labels')
+
+                  scaler = StandardScaler() if standard_scaler else MinMaxScaler()
+
+                  df = pd.DataFrame(scaler.fit_transform(df))
+                  df['Labels'] = labels
+                  normalized_iris_dataset.metadata['state'] = "Normalized"
+                  with open(normalized_iris_dataset.path, 'w') as f:
+                      df.to_csv(f)
+
+            image: registry.access.redhat.com/ubi9/python-311:latest
+        exec-train-model:
+          container:
+            args:
+            - --executor_input
+            - '{{$}}'
+            - --function_to_execute
+            - train_model
+            command:
+            - sh
+            - -c
+            - |2
+
+              if ! [ -x "$(command -v pip)" ]; then
+                  python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+              fi
+
+              PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<"3.9"'  &&  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.0' 'scikit-learn==1.4.0' && "$0" "$@"
+            - sh
+            - -ec
+            - |
+              program_path=$(mktemp -d)
+
+              printf "%s" "$0" > "$program_path/ephemeral_component.py"
+              _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+            - |2+
+
+              import kfp
+              from kfp import dsl
+              from kfp.dsl import *
+              from typing import *
+
+              def train_model(
+                  normalized_iris_dataset: Input[Dataset],
+                  model: Output[Model],
+                  metrics: Output[ClassificationMetrics],
+                  n_neighbors: int,
+              ):
+                  import pickle
+
+                  import pandas as pd
+                  from sklearn.model_selection import train_test_split
+                  from sklearn.neighbors import KNeighborsClassifier
+
+                  from sklearn.metrics import roc_curve
+                  from sklearn.model_selection import train_test_split, cross_val_predict
+                  from sklearn.metrics import confusion_matrix
+
+
+                  with open(normalized_iris_dataset.path) as f:
+                      df = pd.read_csv(f)
+
+                  y = df.pop('Labels')
+                  X = df
+
+                  X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=0)
+
+                  clf = KNeighborsClassifier(n_neighbors=n_neighbors)
+                  clf.fit(X_train, y_train)
+
+                  predictions = cross_val_predict(
+                      clf, X_train, y_train, cv=3)
+                  metrics.log_confusion_matrix(
+                      ['Iris-Setosa', 'Iris-Versicolour', 'Iris-Virginica'],
+                      confusion_matrix(
+                          y_train,
+                          predictions).tolist()  # .tolist() to convert np array to list.
+                  )
+
+                  model.metadata['framework'] = 'scikit-learn'
+                  with open(model.path, 'wb') as f:
+                      pickle.dump(clf, f)
+
+            image: registry.access.redhat.com/ubi9/python-311:latest
+    pipelineInfo:
+      name: iris-training-pipeline
+    root:
+      dag:
+        outputs:
+          artifacts:
+            train-model-metrics:
+              artifactSelectors:
+              - outputArtifactKey: metrics
+                producerSubtask: train-model
+        tasks:
+          create-dataset:
+            cachingOptions:
+              enableCache: true
+            componentRef:
+              name: comp-create-dataset
+            taskInfo:
+              name: create-dataset
+          normalize-dataset:
+            cachingOptions:
+              enableCache: true
+            componentRef:
+              name: comp-normalize-dataset
+            dependentTasks:
+            - create-dataset
+            inputs:
+              artifacts:
+                input_iris_dataset:
+                  taskOutputArtifact:
+                    outputArtifactKey: iris_dataset
+                    producerTask: create-dataset
+              parameters:
+                standard_scaler:
+                  runtimeValue:
+                    constant: true
+            taskInfo:
+              name: normalize-dataset
+          train-model:
+            cachingOptions:
+              enableCache: true
+            componentRef:
+              name: comp-train-model
+            dependentTasks:
+            - normalize-dataset
+            inputs:
+              artifacts:
+                normalized_iris_dataset:
+                  taskOutputArtifact:
+                    outputArtifactKey: normalized_iris_dataset
+                    producerTask: normalize-dataset
+              parameters:
+                n_neighbors:
+                  componentInputParameter: neighbors
+            taskInfo:
+              name: train-model
+      inputDefinitions:
+        parameters:
+          neighbors:
+            defaultValue: 3
+            isOptional: true
+            parameterType: NUMBER_INTEGER
+          standard_scaler:
+            defaultValue: true
+            isOptional: true
+            parameterType: BOOLEAN
+      outputDefinitions:
+        artifacts:
+          train-model-metrics:
+            artifactType:
+              schemaTitle: system.ClassificationMetrics
+              schemaVersion: 0.0.1
+    schemaVersion: 2.1.0
+    sdkVersion: kfp-2.7.0
