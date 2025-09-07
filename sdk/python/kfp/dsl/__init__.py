@@ -42,10 +42,12 @@ __all__ = [
     'PIPELINE_JOB_CREATE_TIME_UTC_PLACEHOLDER',
     'PIPELINE_JOB_SCHEDULE_TIME_UTC_PLACEHOLDER',
     'WORKSPACE_PATH_PLACEHOLDER',
+    'run_notebook',
 ]
 import os
 
 from kfp.dsl.task_config import TaskConfig
+from kfp.dsl.notebook_helpers import run_notebook
 from kfp.dsl.task_final_status import PipelineTaskFinalStatus
 from kfp.dsl.types.artifact_types import Artifact
 from kfp.dsl.types.artifact_types import ClassificationMetrics
@@ -285,6 +287,7 @@ Example:
 # compile-time only dependencies
 if os.environ.get('_KFP_RUNTIME', 'false') != 'true':
     from kfp.dsl.component_decorator import component
+    from kfp.dsl.notebook_component_decorator import notebook_component
     from kfp.dsl.component_task_config import TaskConfigField
     from kfp.dsl.component_task_config import TaskConfigPassthrough
     from kfp.dsl.container_component_decorator import container_component
@@ -312,5 +315,5 @@ if os.environ.get('_KFP_RUNTIME', 'false') != 'true':
         'ExitHandler', 'ParallelFor', 'Collected', 'IfPresentPlaceholder',
         'ConcatPlaceholder', 'PipelineTask', 'PipelineConfig',
         'WorkspaceConfig', 'KubernetesWorkspaceConfig', 'TaskConfigField',
-        'TaskConfigPassthrough'
+        'TaskConfigPassthrough', 'notebook_component'
     ])

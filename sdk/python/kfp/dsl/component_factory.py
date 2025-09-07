@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import dataclasses
+import json
 import inspect
 import itertools
 import pathlib
@@ -542,6 +543,231 @@ def _get_command_and_args_for_lightweight_component(
     ]
 
     return command, args
+
+
+def _resolve_effective_packages(packages_to_install: Optional[List[str]],
+                                defaults: List[str]) -> List[str]:
+    if packages_to_install is None:
+        return list(defaults)
+    return list(packages_to_install)
+
+
+def _resolve_base_image(base_image: Optional[str], decorator_name: str) -> str:
+    if base_image is None:
+        base_image = _DEFAULT_BASE_IMAGE
+        warnings.warn(
+            (f"The default base_image used by {decorator_name} will switch from 'python:3.9' to 'python:3.10' on Oct 1, 2025. "
+             "To ensure your existing components work with versions of the KFP SDK released after that date, you should provide an explicit base_image argument and ensure your component works as intended on Python 3.10."),
+            FutureWarning,
+            stacklevel=2,
+        )
+    return base_image
+
+
+def _embed_file_to_b64(asset_path: pathlib.Path) -> str:
+    import base64
+    return base64.b64encode(asset_path.read_bytes()).decode('ascii')
+
+
+def _build_ephemeral_source(import_lines: List[str], helper_source: str,
+                            func: Callable) -> str:
+    """Builds the ephemeral module source without using str.format to avoid brace collisions.
+
+    Concatenates import lines, helper source, and the user function source.
+    """
+    func_source = _get_function_source_definition(func)
+    parts = [
+        '\n'.join(import_lines),
+        '',
+        helper_source,
+        '',
+        func_source,
+        '',
+    ]
+    return '\n'.join(parts)
+
+
+def _get_command_and_args_for_ephemeral_source(
+        func: Callable, source: str) -> Tuple[List[str], List[str]]:
+    command = [
+        'sh',
+        '-ec',
+        textwrap.dedent(f'''\
+                    program_path=$(mktemp -d)
+
+                    printf "%s" "$0" > "$program_path/ephemeral_component.py"
+                    _KFP_RUNTIME=true python3 -m {EXECUTOR_MODULE} \
+                        --component_module_path \
+                        "$program_path/ephemeral_component.py" \
+                        "$@"
+                '''),
+        source,
+    ]
+    args = [
+        '--executor_input',
+        dsl.PIPELINE_TASK_EXECUTOR_INPUT_PLACEHOLDER,
+        '--function_to_execute',
+        func.__name__,
+    ]
+    return command, args
+
+
+def _generate_notebook_helper_source(embedded_json_placeholder: str) -> str:
+    """Generate the notebook execution helper source code from Python template.
+
+    Uses a Python module to generate the template, which is more robust
+    than file-based templates since it's properly packaged and importable.
+    """
+    from kfp.dsl.templates.notebook_executor import get_notebook_executor_source
+    return get_notebook_executor_source(embedded_json_placeholder)
+
+
+def _get_command_and_args_for_asset_backed_component(
+    func: Callable,
+    *,
+    asset_json_compressed: str,
+) -> Tuple[List[str], List[str]]:
+    """Builds command/args for a component that embeds an asset and uses Python executor.
+
+    Currently the asset is a notebook that is executed via nbconvert when
+    `dsl.run_notebook(**kwargs)` is called. The design is generic so the
+    embedding mechanism can be reused for other Python assets in the future.
+    """
+    import_lines = [
+        'import kfp',
+        'from kfp import dsl',
+        'from kfp.dsl import *',
+        'from typing import *',
+        'import json, os, tempfile',
+        'import nbformat',
+        'from nbconvert.preprocessors import ExecutePreprocessor',
+    ] + custom_artifact_types.get_custom_artifact_type_import_statements(func)
+
+    helper_source = _generate_notebook_helper_source(asset_json_compressed)
+
+    source = _build_ephemeral_source(
+        import_lines=import_lines, helper_source=helper_source, func=func)
+    return _get_command_and_args_for_ephemeral_source(func=func, source=source)
+
+
+def create_notebook_component_from_func(
+    func: Callable,
+    *,
+    notebook_path: str,
+    base_image: Optional[str] = None,
+    packages_to_install: Optional[List[str]] = None,
+    pip_index_urls: Optional[List[str]] = None,
+    output_component_file: Optional[str] = None,
+    install_kfp_package: bool = True,
+    kfp_package_path: Optional[str] = None,
+    pip_trusted_hosts: Optional[List[str]] = None,
+    use_venv: bool = False,
+    task_config_passthroughs: Optional[List[TaskConfigPassthrough]] = None,
+) -> python_component.PythonComponent:
+    """Builds a notebook-based component from a Python function signature.
+
+    Always embeds the notebook bytes and uses nbconvert at runtime.
+    """
+    # packages behavior: None -> default nb deps; [] -> none; non-empty -> exact
+    # Default to ranges that avoid major version bumps.
+    # - jupyter>=1,<2 is a stable meta-package range
+    # - nbconvert>=7,<8 aligns with current stable major
+    effective_packages: List[str] = _resolve_effective_packages(
+        packages_to_install, defaults=['jupyter>=1,<2', 'nbconvert>=7,<8'])
+
+    packages_to_install_command = _get_packages_to_install_command(
+        install_kfp_package=install_kfp_package,
+        target_image=None,
+        kfp_package_path=kfp_package_path,
+        packages_to_install=effective_packages,
+        pip_index_urls=pip_index_urls,
+        pip_trusted_hosts=pip_trusted_hosts,
+        use_venv=use_venv,
+    )
+
+    base_image = _resolve_base_image(
+        base_image, decorator_name='@dsl.notebook_component')
+
+    # Read and embed notebook JSON
+    nb_path = pathlib.Path(notebook_path)
+    if not nb_path.exists() or nb_path.suffix.lower() != '.ipynb':
+        raise ValueError(f'Invalid notebook_path: {notebook_path}')
+    notebook_json_text = nb_path.read_text(encoding='utf-8')
+    # Validate JSON and normalize formatting for embedding
+    try:
+        nb_obj = json.loads(notebook_json_text)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f'Notebook "{notebook_path}" is not valid JSON: {e.msg} '
+            f'at line {e.lineno}, column {e.colno}.') from e
+    if not isinstance(nb_obj, dict) or 'cells' not in nb_obj:
+        raise ValueError(
+            f'Notebook "{notebook_path}" JSON root must be an object with a "cells" field. '
+            f'Got type {type(nb_obj).__name__}.')
+
+    # Compact re-serialization to reduce command length
+    notebook_json_text = json.dumps(nb_obj, separators=(',', ':'))
+    
+    # Compress the notebook JSON to further reduce command length
+    import base64
+    import gzip
+    notebook_json_bytes = notebook_json_text.encode('utf-8')
+    compressed_bytes = gzip.compress(notebook_json_bytes, compresslevel=9)
+    notebook_json_compressed = base64.b64encode(compressed_bytes).decode('ascii')
+
+    # Report compression statistics and warn about large notebooks
+    original_size_mb = len(notebook_json_bytes) / (1024 * 1024)
+    compressed_size_mb = len(compressed_bytes) / (1024 * 1024)
+    compression_ratio = len(compressed_bytes) / len(notebook_json_bytes) if notebook_json_bytes else 0
+    
+    if original_size_mb > 1:  # Lower threshold since we now compress
+        warnings.warn(
+            f"Notebook {notebook_path} is large ({original_size_mb:.1f}MB original, "
+            f"{compressed_size_mb:.1f}MB compressed, {compression_ratio:.1%} ratio). "
+            f"This may cause issues with component execution due to large command size.",
+            UserWarning,
+            stacklevel=2)
+
+    command, args = _get_command_and_args_for_asset_backed_component(
+        func=func,
+        asset_json_compressed=notebook_json_compressed,
+    )
+
+    component_spec = extract_component_interface(func)
+    if task_config_passthroughs:
+        component_spec.task_config_passthroughs = task_config_passthroughs
+    component_spec.implementation = structures.Implementation(
+        container=structures.ContainerSpecImplementation(
+            image=base_image,
+            command=packages_to_install_command + command,
+            args=args,
+        ))
+
+    module_path = pathlib.Path(inspect.getsourcefile(func))
+    module_path.resolve()
+    component_name = _python_function_name_to_component_name(func.__name__)
+    component_info = ComponentInfo(
+        name=component_name,
+        function_name=func.__name__,
+        func=func,
+        target_image=None,
+        module_path=module_path,
+        component_spec=component_spec,
+        output_component_file=output_component_file,
+        base_image=base_image,
+        packages_to_install=effective_packages,
+        pip_index_urls=pip_index_urls,
+        pip_trusted_hosts=pip_trusted_hosts,
+        task_config_passthroughs=task_config_passthroughs,
+    )
+    if REGISTERED_MODULES is not None:
+        REGISTERED_MODULES[component_name] = component_info
+
+    if output_component_file:
+        component_spec.save_to_component_yaml(output_component_file)
+
+    return python_component.PythonComponent(
+        component_spec=component_spec, python_func=func)
 
 
 def _get_command_and_args_for_containerized_component(
