@@ -98,6 +98,35 @@ class InputPath:
         return isinstance(other, InputPath) and self.type == other.type
 
 
+class BundledInput:
+    """Type annotation for a runtime-provided bundled artifact path.
+
+    Used with `@dsl.component(bundled_artifact_path=...)`. The annotated argument
+    is injected at runtime and resolves to an Artifact-like object for the inner
+    type whose `.path` points to the extracted bundle root.
+
+    Example:
+      ::
+
+        @dsl.component(bundled_artifact_path='my/dir')
+        def use_bundle(b: dsl.BundledInput[dsl.Dataset]):
+            print(b.path)
+    """
+
+    def __init__(self, type=None):
+        # For compatibility we store the inner artifact type directly
+        # (not a bundled type string) since this is runtime-only.
+        self.type = type
+
+    def __class_getitem__(cls, item):
+        # Support BundledInput[T] syntax
+        inst = cls(type=item)
+        # Return a proxy object that carries the inner type; executor checks isinstance()
+        return inst
+
+    def __eq__(self, other):
+        return isinstance(other, BundledInput) and self.type == other.type
+
 def construct_type_for_inputpath_or_outputpath(
         type_: Union[str, Type, None]) -> Optional[str]:
     if type_annotations.is_artifact_class(type_):

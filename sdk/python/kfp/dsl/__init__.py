@@ -20,6 +20,7 @@ __all__ = [
     'Output',
     'InputPath',
     'OutputPath',
+    'BundledInput',
     'PipelineTaskFinalStatus',
     'TaskConfig',
     'Artifact',
@@ -62,6 +63,7 @@ from kfp.dsl.types.type_annotations import InputAnnotation
 from kfp.dsl.types.type_annotations import InputPath
 from kfp.dsl.types.type_annotations import OutputAnnotation
 from kfp.dsl.types.type_annotations import OutputPath
+from kfp.dsl.types.type_annotations import BundledInput
 
 try:
     from typing import Annotated
@@ -313,7 +315,7 @@ if os.environ.get('_KFP_RUNTIME', 'false') != 'true':
         'component', 'container_component', 'pipeline', 'importer',
         'ContainerSpec', 'Condition', 'If', 'Elif', 'Else', 'OneOf',
         'ExitHandler', 'ParallelFor', 'Collected', 'IfPresentPlaceholder',
-        'ConcatPlaceholder', 'PipelineTask', 'PipelineConfig',
+        'ConcatPlaceholder', 'PipelineTask', 'PipelineConfig', 'BundledInput',
         'WorkspaceConfig', 'KubernetesWorkspaceConfig', 'TaskConfigField',
         'TaskConfigPassthrough', 'notebook_component'
     ])

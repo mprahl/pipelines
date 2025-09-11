@@ -391,6 +391,23 @@ class Executor:
             elif isinstance(v, type_annotations.InputPath):
                 func_kwargs[k] = self.get_input_artifact_path(k)
 
+            elif isinstance(v, type_annotations.BundledInput):
+                # Resolve bundle dir from module global set by helper
+                import sys as __kfp_sys
+                module = __kfp_sys.modules.get(self.func.__module__)
+                bundle_dir = getattr(module, '__KFP_BUNDLE_DIR', None)
+                bundle_path = getattr(module, '__KFP_BUNDLE_PATH', None)
+                if bundle_dir is None and bundle_path is None:
+                    raise RuntimeError('BundledInput used but no bundle available at runtime.')
+                # Construct artifact instance of inner type
+                inner_type = getattr(v, 'type', None) or artifact_types.Artifact
+                if not type_annotations.is_artifact_class(inner_type):
+                    inner_type = artifact_types.Artifact
+                artifact = inner_type()
+                # Prefer the precise bundle_path (file or dir) when provided
+                artifact.path = bundle_path or bundle_dir
+                func_kwargs[k] = artifact
+
         result = self.func(**func_kwargs)
         return self.write_executor_output(result)
 

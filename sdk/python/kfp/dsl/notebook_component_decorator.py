@@ -58,6 +58,9 @@ def notebook_component(
                 else:
                     task_config_passthroughs_formatted.append(passthrough)
 
+        # Reuse generic bundling path by embedding the notebook as a file
+        # and providing a small runtime shim via packages_to_install to enable nbconvert.
+        # Preserve UX by keeping the same args and behavior.
         return component_factory.create_notebook_component_from_func(
             func=user_func,
             notebook_path=notebook_path,

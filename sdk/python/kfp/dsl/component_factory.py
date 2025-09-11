@@ -269,6 +269,11 @@ def get_name_to_specs(
         annotation = type_annotations.maybe_strip_optional_from_annotation(
             func_param.annotation)
 
+        # Skip runtime-only bundled inputs. They are injected by the executor
+        # and should not appear in the component interface.
+        if isinstance(annotation, type_annotations.BundledInput):
+            continue
+
         # no annotation
         if annotation == inspect._empty:
             raise TypeError(f'Missing type annotation for argument: {name}')
@@ -622,6 +627,60 @@ def _generate_notebook_helper_source(embedded_json_placeholder: str) -> str:
     return get_notebook_executor_source(embedded_json_placeholder)
 
 
+def _generate_bundle_helper_source(bundle_tgz_b64: str, root_name: str) -> str:
+    """Generate helper source that extracts a base64 tar.gz bundle at import time.
+
+    Defines a module-global `__KFP_BUNDLE_DIR` that points to the extracted root.
+    """
+    # Keep this small to avoid command-size growth; do safety checks for path traversal.
+    return f"""__KFP_BUNDLE_TGZ_B64 = '{bundle_tgz_b64}'
+__KFP_BUNDLE_ROOT_NAME = '{root_name}'
+
+import base64 as __kfp_b64
+import tarfile as __kfp_tarfile
+import io as __kfp_io
+import tempfile as __kfp_tempfile
+import os as __kfp_os
+
+def __kfp__is_within_directory(directory, target):
+    abs_directory = __kfp_os.path.abspath(directory)
+    abs_target = __kfp_os.path.abspath(target)
+    return __kfp_os.path.commonprefix([abs_directory, abs_target]) == abs_directory
+
+def __kfp__extract_bundle() -> str:
+    tmpdir = __kfp_tempfile.mkdtemp()
+    data = __kfp_b64.b64decode(__KFP_BUNDLE_TGZ_B64.encode('ascii'))
+    with __kfp_tarfile.open(fileobj=__kfp_io.BytesIO(data), mode='r:gz') as tar:
+        for m in tar.getmembers():
+            target = __kfp_os.path.join(tmpdir, m.name)
+            if not __kfp__is_within_directory(tmpdir, target):
+                raise Exception('Attempted Path Traversal in Tar File')
+        tar.extractall(tmpdir)
+    return tmpdir
+
+__KFP_BUNDLE_DIR = __kfp__extract_bundle()
+__KFP_BUNDLE_PATH = __kfp_os.path.join(__KFP_BUNDLE_DIR, __KFP_BUNDLE_ROOT_NAME)
+"""
+
+
+def _build_ephemeral_source_with_helper(import_lines: List[str], helper_source: str,
+                                        func: Callable) -> str:
+    """Builds ephemeral module source with a provided helper.
+
+    This avoids brace collisions by concatenation and mirrors _build_ephemeral_source.
+    """
+    func_source = _get_function_source_definition(func)
+    parts = [
+        '\n'.join(import_lines),
+        '',
+        helper_source,
+        '',
+        func_source,
+        '',
+    ]
+    return '\n'.join(parts)
+
+
 def _get_command_and_args_for_asset_backed_component(
     func: Callable,
     *,
@@ -644,8 +703,30 @@ def _get_command_and_args_for_asset_backed_component(
     ] + custom_artifact_types.get_custom_artifact_type_import_statements(func)
 
     helper_source = _generate_notebook_helper_source(asset_json_compressed)
-
     source = _build_ephemeral_source(
+        import_lines=import_lines, helper_source=helper_source, func=func)
+    return _get_command_and_args_for_ephemeral_source(func=func, source=source)
+
+
+def _get_command_and_args_for_bundled_component(
+    func: Callable,
+    *,
+    bundle_tgz_b64: str,
+    bundle_root_name: str,
+) -> Tuple[List[str], List[str]]:
+    """Builds command/args for a component that embeds a tar.gz bundle.
+
+    The bundle is extracted at import time and exposed via __KFP_BUNDLE_DIR.
+    """
+    import_lines = [
+        'import kfp',
+        'from kfp import dsl',
+        'from kfp.dsl import *',
+        'from typing import *',
+    ] + custom_artifact_types.get_custom_artifact_type_import_statements(func)
+
+    helper_source = _generate_bundle_helper_source(bundle_tgz_b64, bundle_root_name)
+    source = _build_ephemeral_source_with_helper(
         import_lines=import_lines, helper_source=helper_source, func=func)
     return _get_command_and_args_for_ephemeral_source(func=func, source=source)
 
@@ -786,6 +867,7 @@ def create_component_from_func(
     func: Callable,
     base_image: Optional[str] = None,
     target_image: Optional[str] = None,
+    bundled_artifact_path: Optional[str] = None,
     packages_to_install: List[str] = None,
     pip_index_urls: Optional[List[str]] = None,
     output_component_file: Optional[str] = None,
@@ -830,8 +912,29 @@ def create_component_from_func(
         command, args = _get_command_and_args_for_containerized_component(
             function_name=func.__name__,)
     else:
-        command, args = _get_command_and_args_for_lightweight_component(
-            func=func, additional_funcs=additional_funcs)
+        if bundled_artifact_path:
+            # Build tar.gz in memory and base64-encode
+            import io, tarfile, base64, pathlib as _pl
+            p = _pl.Path(bundled_artifact_path)
+            if not p.exists():
+                raise ValueError(f'bundled_artifact_path does not exist: {bundled_artifact_path}')
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+                if p.is_dir():
+                    # When directory, we add contents under a stable root name
+                    root_name = '.'
+                    for child in p.iterdir():
+                        tar.add(str(child), arcname=child.name)
+                else:
+                    # Single file: add with its basename
+                    root_name = p.name
+                    tar.add(str(p), arcname=p.name)
+            bundle_b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+            command, args = _get_command_and_args_for_bundled_component(
+                func=func, bundle_tgz_b64=bundle_b64, bundle_root_name=root_name)
+        else:
+            command, args = _get_command_and_args_for_lightweight_component(
+                func=func, additional_funcs=additional_funcs)
 
     component_spec = extract_component_interface(func)
     # Attach task_config_passthroughs to the ComponentSpec structure if provided.
