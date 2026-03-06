@@ -20,6 +20,7 @@ import (
 	workflowapi "github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
 	swfapi "github.com/kubeflow/pipelines/backend/src/crd/pkg/apis/scheduledworkflow/v1beta1"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
@@ -501,6 +502,166 @@ func TestWorkflow_SetLabelsToAllTemplates(t *testing.T) {
 	}
 
 	assert.Equal(t, expected, workflow.Get())
+}
+
+func TestWorkflow_SetEnvVarsToDriverAndLauncherTemplates(t *testing.T) {
+	workflow := NewWorkflow(&workflowapi.Workflow{
+		Spec: workflowapi.WorkflowSpec{
+			Templates: []workflowapi.Template{
+				{
+					Name:      "system-dag-driver",
+					Container: &corev1.Container{},
+				},
+				{
+					Name: "system-container-impl",
+					Container: &corev1.Container{
+						Env: []corev1.EnvVar{{Name: "EXISTING_VAR", Value: "keep-me"}},
+					},
+					InitContainers: []workflowapi.UserContainer{{Container: corev1.Container{Name: "kfp-launcher"}}},
+				},
+				{
+					Name:      "user-template",
+					Container: &corev1.Container{},
+				},
+			},
+		},
+	})
+
+	workflow.SetEnvVarsToDriverAndLauncherTemplates(map[string]string{
+		"KFP_MLFLOW_CONFIG": `{"endpoint":"https://mlflow.example.com"}`,
+	})
+
+	// Driver template gets the env var.
+	driverEnv := workflow.Spec.Templates[0].Container.Env
+	assert.Contains(t, driverEnv, corev1.EnvVar{Name: "KFP_MLFLOW_CONFIG", Value: `{"endpoint":"https://mlflow.example.com"}`})
+
+	// Launcher template main container: new env var is added, existing is preserved.
+	launcherEnv := workflow.Spec.Templates[1].Container.Env
+	assert.Contains(t, launcherEnv, corev1.EnvVar{Name: "KFP_MLFLOW_CONFIG", Value: `{"endpoint":"https://mlflow.example.com"}`})
+	assert.Contains(t, launcherEnv, corev1.EnvVar{Name: "EXISTING_VAR", Value: "keep-me"})
+
+	// Launcher init container also gets the env var.
+	initEnv := workflow.Spec.Templates[1].InitContainers[0].Env
+	assert.Contains(t, initEnv, corev1.EnvVar{Name: "KFP_MLFLOW_CONFIG", Value: `{"endpoint":"https://mlflow.example.com"}`})
+
+	// User template (not driver/launcher) also receives env vars (all templates are injected).
+	userEnv := workflow.Spec.Templates[2].Container.Env
+	assert.Contains(t, userEnv, corev1.EnvVar{Name: "KFP_MLFLOW_CONFIG", Value: `{"endpoint":"https://mlflow.example.com"}`})
+}
+
+func TestWorkflow_SetEnvVarsToDriverAndLauncherTemplates_EmptyEnvVars(t *testing.T) {
+	workflow := NewWorkflow(&workflowapi.Workflow{
+		Spec: workflowapi.WorkflowSpec{
+			Templates: []workflowapi.Template{
+				{Name: "driver", Container: &corev1.Container{}},
+			},
+		},
+	})
+
+	workflow.SetEnvVarsToDriverAndLauncherTemplates(map[string]string{})
+
+	// No env vars should be added.
+	assert.Empty(t, workflow.Spec.Templates[0].Container.Env)
+}
+
+func TestWorkflow_SetMLflowEnabledFlag(t *testing.T) {
+	workflow := NewWorkflow(&workflowapi.Workflow{
+		Spec: workflowapi.WorkflowSpec{
+			Templates: []workflowapi.Template{
+				{
+					Name:      "system-dag-driver",
+					Container: &corev1.Container{Args: []string{"--type", "DAG"}},
+				},
+				{
+					Name:      "system-container-impl",
+					Container: &corev1.Container{},
+					InitContainers: []workflowapi.UserContainer{
+						{Container: corev1.Container{Name: "kfp-launcher", Args: []string{"--copy", "/kfp-launcher/launch"}}},
+					},
+				},
+				{
+					Name:      "user-template",
+					Container: &corev1.Container{Args: []string{"python", "main.py"}},
+				},
+			},
+		},
+	})
+
+	workflow.SetMLflowEnabledFlag()
+
+	// Driver template gets --mlflow_enabled.
+	assert.Contains(t, workflow.Spec.Templates[0].Container.Args, "--mlflow_enabled")
+
+	// Launcher init container gets --mlflow_enabled.
+	assert.Contains(t, workflow.Spec.Templates[1].InitContainers[0].Args, "--mlflow_enabled")
+
+	// Launcher main container (no --type arg) does NOT get the flag.
+	assert.NotContains(t, workflow.Spec.Templates[1].Container.Args, "--mlflow_enabled")
+
+	// User template does NOT get --mlflow_enabled.
+	assert.NotContains(t, workflow.Spec.Templates[2].Container.Args, "--mlflow_enabled")
+
+	// Calling again should not duplicate the flag.
+	workflow.SetMLflowEnabledFlag()
+	count := 0
+	for _, a := range workflow.Spec.Templates[0].Container.Args {
+		if a == "--mlflow_enabled" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "--mlflow_enabled should appear exactly once")
+}
+
+func TestWorkflow_SetEnvVarsToDriverAndLauncherTemplates_NoDuplicates(t *testing.T) {
+	workflow := NewWorkflow(&workflowapi.Workflow{
+		Spec: workflowapi.WorkflowSpec{
+			Templates: []workflowapi.Template{
+				{
+					Name: "system-dag-driver",
+					Container: &corev1.Container{
+						Env: []corev1.EnvVar{{Name: "KFP_MLFLOW_CONFIG", Value: "old-value"}},
+					},
+				},
+				{
+					Name: "system-container-impl",
+					Container: &corev1.Container{
+						Env: []corev1.EnvVar{{Name: "KFP_MLFLOW_CONFIG", Value: "old-value"}},
+					},
+					InitContainers: []workflowapi.UserContainer{
+						{Container: corev1.Container{
+							Name: "kfp-launcher",
+							Env:  []corev1.EnvVar{{Name: "KFP_MLFLOW_CONFIG", Value: "old-value"}},
+						}},
+					},
+				},
+			},
+		},
+	})
+
+	// Call with the same key but a new value — should NOT duplicate.
+	workflow.SetEnvVarsToDriverAndLauncherTemplates(map[string]string{
+		"KFP_MLFLOW_CONFIG": "new-value",
+	})
+
+	// Driver: env should have exactly one KFP_MLFLOW_CONFIG (the old value is preserved).
+	driverEnv := workflow.Spec.Templates[0].Container.Env
+	count := 0
+	for _, e := range driverEnv {
+		if e.Name == "KFP_MLFLOW_CONFIG" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "KFP_MLFLOW_CONFIG must appear exactly once on driver")
+
+	// Init container: same check.
+	initEnv := workflow.Spec.Templates[1].InitContainers[0].Env
+	count = 0
+	for _, e := range initEnv {
+		if e.Name == "KFP_MLFLOW_CONFIG" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "KFP_MLFLOW_CONFIG must appear exactly once on init container")
 }
 
 func TestSetLabels(t *testing.T) {

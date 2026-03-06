@@ -93,6 +93,10 @@ type ScheduledWorkflowSpec struct {
 	// ServiceAccount
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 
+	// PluginsInput is passed through to CreateRun for each triggered run.
+	// +optional
+	PluginsInput string `json:"pluginsInput,omitempty"`
+
 	// TODO: support additional resource types: K8 jobs, etc.
 
 }
