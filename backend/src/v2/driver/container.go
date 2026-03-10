@@ -24,6 +24,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/kubeflow/pipelines/api/v2alpha1/go/pipelinespec"
 	"github.com/kubeflow/pipelines/backend/src/v2/cacheutils"
+	mlflowutil "github.com/kubeflow/pipelines/backend/src/v2/common/mlflow/util"
+	"github.com/kubeflow/pipelines/backend/src/v2/config"
 	"github.com/kubeflow/pipelines/backend/src/v2/expression"
 	"github.com/kubeflow/pipelines/backend/src/v2/metadata"
 	pb "github.com/kubeflow/pipelines/third_party/ml-metadata/go/ml_metadata"
@@ -176,6 +178,15 @@ func Container(ctx context.Context, opts Options, mlmd *metadata.Client, cacheCl
 		ecfg.CachedMLMDExecutionID = cachedMLMDExecutionID
 		ecfg.FingerPrint = fingerPrint
 	}
+	var mlflowRunID string
+	if opts.MLflowEnabled {
+		mlflowRunID, err = mlflowutil.ApplyMLflowOnTaskStart(ctx, config.GetKfpMLflowRuntimeConfig(), opts.TaskName)
+		if err != nil {
+			glog.Errorf("Failed to launch MLflow task (pipeline run will continue): %v", err)
+		} else {
+			ecfg.MLflowRunID = mlflowRunID
+		}
+	}
 
 	// TODO(Bobgy): change execution state to pending, because this is driver, execution hasn't started.
 	createdExecution, err := mlmd.CreateExecution(ctx, pipeline, ecfg)
@@ -203,6 +214,12 @@ func Container(ctx context.Context, opts Options, mlmd *metadata.Client, cacheCl
 			// TODO(Bobgy): upload output artifacts.
 			// TODO(Bobgy): when adding artifacts, we will need execution.pipeline to be non-nil, because we need
 			// to publish output artifacts to the context too.
+			if opts.MLflowEnabled {
+				err = mlflowutil.ApplyMLflowOnTaskEnd(ctx, mlflowRunID, config.GetKfpMLflowRuntimeConfig(), createdExecution)
+				if err != nil {
+					glog.Errorf("Failed to apply MLflow OnTaskEnd (pipeline run is not affected): %v", err)
+				}
+			}
 			if err := mlmd.PublishExecution(ctx, createdExecution, executorOutput.GetParameterValues(), outputArtifacts, pb.Execution_CACHED); err != nil {
 				return execution, fmt.Errorf("failed to publish cached execution: %w", err)
 			}
@@ -235,6 +252,8 @@ func Container(ctx context.Context, opts Options, mlmd *metadata.Client, cacheCl
 		opts.MLPipelineServerPort,
 		opts.MLMDServerAddress,
 		opts.MLMDServerPort,
+		opts.MLflowEnabled,
+		mlflowRunID,
 	)
 	if err != nil {
 		return execution, err

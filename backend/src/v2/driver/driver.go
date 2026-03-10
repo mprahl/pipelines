@@ -20,10 +20,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/kubeflow/pipelines/backend/src/apiserver/config/proxy"
-
+	"github.com/golang/glog"
 	"github.com/kubeflow/pipelines/api/v2alpha1/go/pipelinespec"
+	"github.com/kubeflow/pipelines/backend/src/apiserver/config/proxy"
+	commonmlflow "github.com/kubeflow/pipelines/backend/src/common/mlflow"
 	"github.com/kubeflow/pipelines/backend/src/v2/component"
+	"github.com/kubeflow/pipelines/backend/src/v2/config"
 	"github.com/kubeflow/pipelines/backend/src/v2/metadata"
 	"github.com/kubeflow/pipelines/kubernetes_platform/go/kubernetesplatform"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -98,6 +100,9 @@ type Options struct {
 	DefaultRunAsGroup *int64
 	// Admin-configured default runAsNonRoot for user containers. Nil means not set.
 	DefaultRunAsNonRoot *bool
+
+	// set to true if MLflow experiment tracking is enabled
+	MLflowEnabled bool
 }
 
 // TaskConfig needs to stay aligned with the TaskConfig in the SDK.
@@ -254,6 +259,8 @@ func initPodSpecPatch(
 	mlPipelineServerPort string,
 	mlmdServerAddress string,
 	mlmdServerPort string,
+	mlflowEnabled bool,
+	mlflowRunID string,
 ) (*k8score.PodSpec, error) {
 	executorInputJSON, err := protojson.Marshal(executorInput)
 	if err != nil {
@@ -268,6 +275,21 @@ func initPodSpecPatch(
 	userEnvVar := make([]k8score.EnvVar, 0)
 	for _, envVar := range container.GetEnv() {
 		userEnvVar = append(userEnvVar, k8score.EnvVar{Name: envVar.GetName(), Value: envVar.GetValue()})
+	}
+
+	if mlflowEnabled {
+		if mlflowRunID != "" {
+			userEnvVar = append(userEnvVar, k8score.EnvVar{Name: "MLFLOW_RUN_ID", Value: mlflowRunID})
+		}
+		var mlflowRuntimeCfg commonmlflow.MLflowRuntimeConfig
+		mlflowRuntimeCfg, err = config.FormatKfpMLflowRuntimeConfig()
+		if err != nil {
+			glog.Errorf("Failed to retrieve MLflow runtime config: %v", err)
+		} else {
+			userEnvVar = append(userEnvVar, k8score.EnvVar{Name: "MLFLOW_TRACKING_URI", Value: mlflowRuntimeCfg.Endpoint})
+			userEnvVar = append(userEnvVar, k8score.EnvVar{Name: "MLFLOW_WORKSPACE", Value: mlflowRuntimeCfg.Workspace})
+			userEnvVar = append(userEnvVar, k8score.EnvVar{Name: "MLFLOW_TRACKING_AUTH", Value: mlflowRuntimeCfg.AuthType})
+		}
 	}
 
 	userEnvVar = append(userEnvVar, proxy.GetConfig().GetEnvVars()...)

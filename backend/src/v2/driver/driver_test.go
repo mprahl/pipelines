@@ -284,6 +284,8 @@ func Test_initPodSpecPatch_acceleratorConfig(t *testing.T) {
 				"8887",
 				"metadata-grpc-service.kubeflow.svc.local",
 				"8080",
+				false,
+				"",
 			)
 			if tt.wantErr {
 				assert.Nil(t, podSpec)
@@ -407,6 +409,8 @@ func Test_initPodSpecPatch_resource_placeholders(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 	assert.Len(t, podSpec.Containers, 1)
@@ -461,6 +465,8 @@ func Test_initPodSpecPatch_legacy_resources(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 	assert.Len(t, podSpec.Containers, 1)
@@ -517,6 +523,8 @@ func Test_initPodSpecPatch_modelcar_input_artifact(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 
@@ -578,6 +586,8 @@ func Test_initPodSpecPatch_publishLogs(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 	cmd := podSpec.Containers[0].Command
@@ -709,6 +719,8 @@ func Test_initPodSpecPatch_resourceRequests(t *testing.T) {
 				"8887",
 				"metadata-grpc-service.kubeflow.svc.local",
 				"8080",
+				false,
+				"",
 			)
 			assert.Nil(t, err)
 			assert.NotEmpty(t, podSpec)
@@ -771,6 +783,8 @@ func Test_initPodSpecPatch_TaskConfig_ForwardsResourcesOnly(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 	assert.NotNil(t, podSpec)
@@ -839,6 +853,8 @@ func Test_initPodSpecPatch_inputTaskFinalStatus(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	require.Nil(t, err)
 
@@ -1043,6 +1059,8 @@ func Test_initPodSpecPatch_WorkspaceRequiresRunName(t *testing.T) {
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	require.NotNil(t, err)
 }
@@ -1156,7 +1174,7 @@ func TestWorkspaceMount_PassthroughVolumes_CaptureOnly(t *testing.T) {
 	taskCfg := &TaskConfig{}
 	podSpec, err := initPodSpecPatch(
 		containerSpec, componentSpec, executorInput,
-		27, "test", "run", "my-run-name", "1", "false", "false", taskCfg, false, false, "", "ml-pipeline.kubeflow", "8887", "metadata-grpc-service.kubeflow.svc.local", "8080",
+		27, "test", "run", "my-run-name", "1", "false", "false", taskCfg, false, false, "", "ml-pipeline.kubeflow", "8887", "metadata-grpc-service.kubeflow.svc.local", "8080", false, "",
 	)
 	assert.Nil(t, err)
 
@@ -1199,7 +1217,7 @@ func TestWorkspaceMount_PassthroughVolumes_ApplyAndCapture(t *testing.T) {
 	taskCfg := &TaskConfig{}
 	podSpec, err := initPodSpecPatch(
 		containerSpec, componentSpec, executorInput,
-		27, "test", "run", "my-run-name", "1", "false", "false", taskCfg, false, false, "", "ml-pipeline.kubeflow", "8887", "metatadata-grpc-service.kubeflow.svc.local", "8080",
+		27, "test", "run", "my-run-name", "1", "false", "false", taskCfg, false, false, "", "ml-pipeline.kubeflow", "8887", "metatadata-grpc-service.kubeflow.svc.local", "8080", false, "",
 	)
 	assert.Nil(t, err)
 	// Should mount workspace to pod and also capture to TaskConfig
@@ -1269,7 +1287,7 @@ func TestWorkspaceMount_TriggeredByArtifactMetadata(t *testing.T) {
 	taskCfg := &TaskConfig{}
 	podSpec, err := initPodSpecPatch(
 		containerSpec, componentSpec, execInput,
-		27, "test", "run", "my-run-name", "1", "false", "false", taskCfg, false, false, "", "ml-pipeline.kubeflow", "8887", "metadata-grpc-service.kubeflow.svc.local", "8080",
+		27, "test", "run", "my-run-name", "1", "false", "false", taskCfg, false, false, "", "ml-pipeline.kubeflow", "8887", "metadata-grpc-service.kubeflow.svc.local", "8080", false, "",
 	)
 	assert.Nil(t, err)
 
@@ -1332,6 +1350,8 @@ func Test_initPodSpecPatch_TaskConfig_Env_Passthrough_CaptureOnly(t *testing.T) 
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 
@@ -1383,6 +1403,8 @@ func Test_initPodSpecPatch_TaskConfig_Resources_Passthrough_ApplyAndCapture(t *t
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 	// Resources should be both on pod and in TaskConfig
@@ -1465,6 +1487,8 @@ func Test_initPodSpecPatch_TaskConfig_Affinity_NodeSelector_Tolerations_Passthro
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 
@@ -1568,6 +1592,8 @@ func Test_initPodSpecPatch_TaskConfig_Affinity_NodeSelector_Tolerations_ApplyAnd
 		"8887",
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 
@@ -1653,6 +1679,8 @@ func Test_initPodSpecPatch_mlPipelineServerConfig(t *testing.T) {
 		customPort,
 		"metadata-grpc-service.kubeflow.svc.local",
 		"8080",
+		false,
+		"",
 	)
 	assert.Nil(t, err)
 	assert.NotNil(t, podSpec)
@@ -1674,4 +1702,59 @@ func Test_initPodSpecPatch_mlPipelineServerConfig(t *testing.T) {
 	}
 	assert.True(t, foundAddress, "--ml_pipeline_server_address not found in launcher command")
 	assert.True(t, foundPort, "--ml_pipeline_server_port not found in launcher command")
+}
+
+func Test_initPodSpecPatch_mlflowConfig(t *testing.T) {
+
+	proxy.InitializeConfigWithEmptyForTests()
+
+	tests := []struct {
+		name           string
+		mlflowEnabled  bool
+		mlflowRunId    string
+		expectedEnvVar *k8score.EnvVar
+	}{
+		{"mlflowEnabled is true", true, "test-mlflow-run-id", &k8score.EnvVar{Name: "MLFLOW_RUN_ID", Value: "test-mlflow-run-id"}},
+		{"mlflowEnabled is true & runID is empty", true, "", &k8score.EnvVar{Name: "MLFLOW_RUN_ID", Value: ""}},
+		{"mlflowEnabled is false", false, "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			containerSpec := &pipelinespec.PipelineDeploymentConfig_PipelineContainerSpec{Image: "python:3.11"}
+			componentSpec := &pipelinespec.ComponentSpec{}
+			executorInput := &pipelinespec.ExecutorInput{}
+			taskConfig := &TaskConfig{}
+
+			podSpec, err := initPodSpecPatch(
+				containerSpec,
+				componentSpec,
+				executorInput,
+				27,
+				"test",
+				"0254beba-0be4-4065-8d97-7dc5e3adf300",
+				"my-run-name",
+				"1",
+				"false",
+				"false",
+				taskConfig,
+				false,
+				false,
+				"",
+				"ml-pipeline.kubeflow",
+				"8887",
+				"metadata-grpc-service.kubeflow.svc.local",
+				"8080",
+				tt.mlflowEnabled,
+				tt.mlflowRunId,
+			)
+
+			assert.Nil(t, err)
+			assert.NotNil(t, podSpec)
+
+			envVars := podSpec.Containers[0].Env
+			assert.Contains(t, envVars, &k8score.EnvVar{Name: "MLFLOW_RUN_ID", Value: "test-mlflow-run-id"})
+
+		})
+	}
+
 }

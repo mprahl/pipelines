@@ -585,3 +585,89 @@ func TestMLflowRuntimeConfig_RoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.Equal(t, original, decoded)
 }
+
+func TestLogBatch_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, pathRunsLogBatch, r.URL.Path)
+
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &payload))
+		assert.Equal(t, "exp-1", payload["run_id"])
+		assert.Equal(t, testFormattedMetrics(), payload["metrics"])
+		assert.Equal(t, testFormattedParams(), payload["metrics"])
+		assert.Equal(t, testFormattedTags(), payload["tags"])
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	c := newTestClient(t, server.URL)
+	err := c.LogBatch(context.Background(), "exp-1", testMetrics(), testParams(), testTags())
+	require.NoError(t, err)
+}
+
+func TestLogBatch_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error_code":"INVALID_PARAMETER_VALUE","message":"bad param"}`))
+	}))
+	defer server.Close()
+
+	c := newTestClient(t, server.URL)
+	err := c.LogBatch(context.Background(), "exp-1", testMetrics(), testParams(), testTags())
+	require.Error(t, err)
+	apiErr, ok := err.(*APIError)
+	require.True(t, ok)
+	assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+	assert.Equal(t, "INVALID_PARAMETER_VALUE", apiErr.ErrorCode)
+}
+
+func testMetrics() []Metric {
+	return []Metric{
+		{Key: "CreateTimeSinceEpoch", Value: 1742826366000},
+	}
+}
+
+func testFormattedMetrics() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"key":       "CreateTimeSinceEpoch",
+			"step":      float64(0),
+			"timestamp": float64(0),
+			"value":     float64(1742826366000),
+		},
+	}
+}
+
+func testParams() []Param {
+	return []Param{
+		{Key: "input-parameter", Value: "input-value"},
+	}
+}
+
+func testFormattedParams() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"key":       "CreateTimeSinceEpoch",
+			"step":      float64(0),
+			"timestamp": float64(0),
+			"value":     float64(1742826366000),
+		},
+	}
+}
+
+func testTags() []Tag {
+	return []Tag{
+		{Key: "tag-key", Value: "tag-value"},
+	}
+}
+
+func testFormattedTags() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"key":   "tag-key",
+			"value": "tag-value",
+		},
+	}
+}

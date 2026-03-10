@@ -50,6 +50,7 @@ var (
 	caCertPath              = flag.String("ca_cert_path", "", "The path to the CA certificate to trust on connections to the ML pipeline API server and metadata server.")
 	mlPipelineTLSEnabled    = flag.Bool("ml_pipeline_tls_enabled", false, "Set to true if mlpipeline API server serves over TLS.")
 	metadataTLSEnabled      = flag.Bool("metadata_tls_enabled", false, "Set to true if MLMD serves over TLS.")
+	mlflowEnabled           = flag.Bool("mlflow_enabled", false, "Set to true if MLflow experiment tracking is enabled.")
 )
 
 func main() {
@@ -95,6 +96,7 @@ func run() error {
 		MLPipelineTLSEnabled:    *mlPipelineTLSEnabled,
 		MLMDTLSEnabled:          *metadataTLSEnabled,
 		CaCertPath:              *caCertPath,
+		MLflowEnabled:           *mlflowEnabled,
 	}
 
 	switch *executorType {

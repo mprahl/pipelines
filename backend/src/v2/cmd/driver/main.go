@@ -96,6 +96,7 @@ var (
 	defaultRunAsUser     = flag.Int64("default_run_as_user", -1, "Admin-configured default runAsUser for user containers. -1 means not set.")
 	defaultRunAsGroup    = flag.Int64("default_run_as_group", -1, "Admin-configured default runAsGroup for user containers. -1 means not set.")
 	defaultRunAsNonRoot  = flag.String("default_run_as_non_root", "", "Admin-configured default runAsNonRoot for user containers. Empty means not set.")
+	mlflowEnabled        = flag.Bool("mlflow_enabled", false, "Set to true if MLflow experiment tracking is enabled.")
 )
 
 // func RootDAG(pipelineName string, runID string, component *pipelinespec.ComponentSpec, task *pipelinespec.PipelineTaskSpec, mlmd *metadata.Client) (*Execution, error) {
@@ -234,6 +235,7 @@ func drive() (err error) {
 		MLPipelineTLSEnabled:    *mlPipelineTLSEnabled,
 		MLMDTLSEnabled:          *metadataTLSEnabled,
 		CaCertPath:              *caCertPath,
+		MLflowEnabled:           *mlflowEnabled,
 	}
 	var execution *driver.Execution
 	var driverErr error

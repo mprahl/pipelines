@@ -54,6 +54,7 @@ const (
 	pathRunsUpdate           = "/api/2.0/mlflow/runs/update"
 	pathRunsSetTag           = "/api/2.0/mlflow/runs/set-tag"
 	pathRunsSearch           = "/api/2.0/mlflow/runs/search"
+	pathRunsLogBatch         = "/api/2.0/mlflow/runs/log-batch"
 )
 
 // Workspace header used when workspace-based multi-tenancy is enabled.
@@ -80,10 +81,24 @@ type Config struct {
 	Retry             RetryPolicy
 }
 
+// Param represents a single parameter key-value pair from a run, used in request to POST /api/2.0/mlflow/runs/log-batch
+type Param struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// Metric represents a scalar metric recorded during a run, used in request to POST /api/2.0/mlflow/runs/log-batch
+type Metric struct {
+	Key       string  `json:"key"`
+	Value     float64 `json:"value"`
+	Timestamp int64   `json:"timestamp"`
+	Step      int64   `json:"step"`
+}
+
 // Tag represents a key-value tag to set on an MLflow run.
 type Tag struct {
-	Key   string
-	Value string
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // MLflowExperiment represents an MLflow experiment as returned by the REST API.
@@ -258,6 +273,35 @@ func (c *Client) SearchRuns(ctx context.Context, experimentIDs []string, filter 
 		return nil, fmt.Errorf("failed to parse SearchRuns response: %w", err)
 	}
 	return &result, nil
+}
+
+// LogBatch logs a batch of metrics, params, and tags to an MLflow run.
+func (c *Client) LogBatch(ctx context.Context, runID string, metrics []Metric, params []Param, tags []Tag) error {
+	if runID == "" || metrics == nil || params == nil || tags == nil {
+		return fmt.Errorf("invalid arguments: runID=%q, metrics=%v, params=%v, tags=%v", runID, metrics, params, tags)
+	}
+
+	body := map[string]interface{}{
+		"run_id":  runID,
+		"metrics": metrics,
+		"params":  params,
+		"tags":    tags,
+	}
+	if len(metrics) > 0 {
+		body["metrics"] = metrics
+	}
+	if len(params) > 0 {
+		body["params"] = params
+	}
+	if len(tags) > 0 {
+		body["tags"] = tags
+	}
+
+	_, err := c.postJSON(ctx, pathRunsLogBatch, body)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // APIError represents an error response from the MLflow REST API.

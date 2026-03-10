@@ -21,9 +21,12 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/kubeflow/pipelines/api/v2alpha1/go/pipelinespec"
+	"github.com/kubeflow/pipelines/backend/src/v2/config"
 	"github.com/kubeflow/pipelines/backend/src/v2/expression"
 	"github.com/kubeflow/pipelines/backend/src/v2/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	mlflowutil "github.com/kubeflow/pipelines/backend/src/v2/common/mlflow/util"
 )
 
 func validateDAG(opts Options) (err error) {
@@ -106,6 +109,17 @@ func DAG(ctx context.Context, opts Options, mlmd *metadata.Client) (execution *E
 	ecfg.ParentDagID = dag.Execution.GetID()
 	ecfg.IterationIndex = iterationIndex
 	ecfg.NotTriggered = !execution.WillTrigger()
+
+	// If a loop (iterationIndex > 0), the loop's parent DAG driver creates one nested MLflow run per iteration.
+	var mlflowRunID string
+	if iterationIndex != nil && *iterationIndex > 0 {
+		mlflowRunID, err = mlflowutil.ApplyMLflowOnTaskStart(ctx, config.GetKfpMLflowRuntimeConfig(), opts.TaskName)
+		if err != nil {
+			glog.Errorf("Failed to launch nested MLflow run for task (pipeline run will continue): %v", err)
+		} else {
+			ecfg.MLflowRunID = mlflowRunID
+		}
+	}
 
 	// Handle writing output parameters to MLMD.
 	ecfg.OutputParameters = opts.Component.GetDag().GetOutputs().GetParameters()

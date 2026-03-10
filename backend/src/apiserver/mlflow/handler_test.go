@@ -36,7 +36,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
-// ---- Helpers ----
+// ---- Helpers ----`
 
 func setupSAToken(t *testing.T) func() {
 	t.Helper()

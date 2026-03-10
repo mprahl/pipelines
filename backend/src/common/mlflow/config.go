@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -79,6 +80,13 @@ type MLflowCredentials struct {
 	BearerToken   string
 	BasicUsername string
 	BasicPassword string
+}
+
+type RequestContext struct {
+	BaseURL           *url.URL
+	Client            *Client
+	Workspace         string
+	WorkspacesEnabled bool
 }
 
 // MergePluginConfig merges namespace-level overrides into the global config.

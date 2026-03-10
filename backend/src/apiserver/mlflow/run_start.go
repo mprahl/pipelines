@@ -30,19 +30,13 @@ const (
 	EntryRunURL                  = "run_url"
 )
 
-type RequestContext struct {
-	BaseURL           *url.URL
-	Client            *commonmlflow.Client
-	Workspace         string
-	WorkspacesEnabled bool
-}
-
 type Experiment struct {
 	ID   string
 	Name string
 }
 
 type RunSyncMode string
+type RequestContext commonmlflow.RequestContext
 
 const (
 	RunSyncModeTerminal RunSyncMode = "terminal"

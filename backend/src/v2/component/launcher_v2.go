@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubeflow/pipelines/backend/src/v2/common/mlflow/util"
+	"github.com/kubeflow/pipelines/backend/src/v2/config"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/golang/glog"
@@ -61,6 +63,8 @@ type LauncherV2Options struct {
 	// Set to true if metadata server is serving over TLS
 	MLMDTLSEnabled bool
 	CaCertPath     string
+	// Set to true if MLflow experiment tracking is enabled
+	MLflowEnabled bool
 }
 
 type LauncherV2 struct {
@@ -189,6 +193,12 @@ func (l *LauncherV2) Execute(ctx context.Context) (err error) {
 		if execution == nil {
 			glog.Errorf("Skipping publish since execution is nil. Original err is: %v", err)
 			return
+		}
+		if l.options.MLflowEnabled {
+			runtimeCfg := config.GetKfpMLflowRuntimeConfig()
+			if mlflowErr := util.ApplyMLflowOnTaskEnd(ctx, config.GetMLflowRunID(), runtimeCfg, execution); err != nil {
+				glog.Errorf("MLflow plugin failed with error: %v", mlflowErr)
+			}
 		}
 
 		if perr := l.publish(ctx, execution, executorOutput, outputArtifacts, status); perr != nil {
