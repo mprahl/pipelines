@@ -20,6 +20,16 @@ spec:
             value: "2"
       containers:
         - name: ml-pipeline-api-server
+          readinessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 12
           env:
             - name: V2_DRIVER_IMAGE
               value: kind-registry:5000/driver:ci

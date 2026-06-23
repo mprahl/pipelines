@@ -20,12 +20,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
+	"github.com/golang/glog"
 	apiserverPlugins "github.com/kubeflow/pipelines/backend/src/apiserver/plugins"
 	commonmlflow "github.com/kubeflow/pipelines/backend/src/common/plugins/mlflow"
 	"github.com/kubeflow/pipelines/backend/src/common/util"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -49,8 +53,11 @@ func ApplySettingsDefaults(settings *commonmlflow.MLflowPluginSettings) *commonm
 	if settings == nil {
 		settings = &commonmlflow.MLflowPluginSettings{}
 	}
+	if settings.AuthType == "" {
+		settings.AuthType = commonmlflow.AuthTypeKubernetes
+	}
 	if settings.WorkspacesEnabled == nil {
-		defaultEnabled := true
+		defaultEnabled := settings.AuthType == commonmlflow.AuthTypeKubernetes
 		settings.WorkspacesEnabled = &defaultEnabled
 	}
 	if settings.DefaultExperimentName == "" {
@@ -63,10 +70,30 @@ func ApplySettingsDefaults(settings *commonmlflow.MLflowPluginSettings) *commonm
 	return settings
 }
 
-// ResolvedConfig bundles the merged plugin configuration and its parsed settings.
+// ResolvedConfig bundles the merged, defaulted plugin configuration and its
+// resolved credentials.
 type ResolvedConfig struct {
-	Settings *commonmlflow.MLflowPluginSettings
-	Config   *commonmlflow.PluginConfig
+	Config      *commonmlflow.PluginConfig
+	Credentials commonmlflow.MLflowCredentials
+}
+
+func newResolvedConfig(config *commonmlflow.PluginConfig, credentials commonmlflow.MLflowCredentials) (*ResolvedConfig, error) {
+	if config == nil {
+		return nil, util.NewInternalServerError(errors.New("MLflow config is nil"), "resolved MLflow config requires plugin config")
+	}
+	if config.Settings == nil {
+		return nil, util.NewInternalServerError(errors.New("MLflow plugin settings are nil"), "resolved MLflow config requires plugin settings")
+	}
+	if credentials.AuthType == "" {
+		return nil, util.NewInternalServerError(
+			fmt.Errorf("missing resolved credentials for auth type %q", config.Settings.AuthType),
+			"resolved MLflow config requires credentials",
+		)
+	}
+	return &ResolvedConfig{
+		Config:      config,
+		Credentials: credentials,
+	}, nil
 }
 
 // MLflowPluginInput represents the user-facing plugins_input.mlflow schema.
@@ -152,10 +179,21 @@ func ResolveMLflowRequestConfig(ctx context.Context, kubeClients KubeClientProvi
 		mergedCfg.Timeout = DefaultTimeout
 	}
 	settings := ApplySettingsDefaults(mergedCfg.Settings)
-	return &ResolvedConfig{
-		Settings: settings,
-		Config:   &mergedCfg,
-	}, nil
+	if namespaceCfg != nil {
+		if namespaceCfg.Settings == nil || namespaceCfg.Settings.CredentialSecretRef == nil {
+			settings.CredentialSecretRef = nil
+		}
+		if err := validateNamespaceOverridePolicy(settings, namespaceCfg); err != nil {
+			glog.Warningf("MLflow disabled for namespace %q: %v", namespace, err)
+			return nil, nil
+		}
+	}
+	credentials, err := resolveConfiguredCredentials(ctx, kubeClients.GetClientSet(), namespace, settings)
+	if err != nil {
+		return nil, err
+	}
+	mergedCfg.Settings = settings
+	return newResolvedConfig(&mergedCfg, credentials)
 }
 
 // BuildMLflowRunRequestContext constructs a fully initialized RequestContext by
@@ -168,19 +206,19 @@ func BuildMLflowRunRequestContext(ctx context.Context, namespace string, request
 	if requestCfg.Config.Endpoint == "" {
 		return nil, util.NewInvalidInputError("plugins.mlflow endpoint must be set")
 	}
-	settings := requestCfg.Settings
+	settings := requestCfg.Config.Settings
 	if settings == nil {
 		return nil, util.NewInternalServerError(errors.New("MLflow plugin settings are nil"), "BuildMLflowRequestContext requires resolved settings")
 	}
 	workspacesEnabled := settings.WorkspacesEnabled != nil && *settings.WorkspacesEnabled
-	return commonmlflow.BuildMLflowRequestContext(*requestCfg.Config, namespace, workspacesEnabled)
+	return commonmlflow.BuildMLflowRequestContext(*requestCfg.Config, requestCfg.Credentials, namespace, workspacesEnabled)
 }
 
 // ResolveMLflowPluginInput parses the plugins_input.mlflow JSON from a run model,
-// validates it against the MLflowPluginInput schema, and applies defaults.
+// and validates it against the MLflowPluginInput schema.
 func ResolveMLflowPluginInput(pluginsInputString *string) (*MLflowPluginInput, error) {
 	if pluginsInputString == nil || *pluginsInputString == "" {
-		return &MLflowPluginInput{ExperimentName: DefaultExperimentName}, nil
+		return &MLflowPluginInput{}, nil
 	}
 
 	var pluginInputs apiserverPlugins.PluginsInputMap
@@ -189,7 +227,7 @@ func ResolveMLflowPluginInput(pluginsInputString *string) (*MLflowPluginInput, e
 	}
 	mlflowRaw, ok := pluginInputs["mlflow"]
 	if !ok || len(mlflowRaw) == 0 {
-		return &MLflowPluginInput{ExperimentName: DefaultExperimentName}, nil
+		return &MLflowPluginInput{}, nil
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(mlflowRaw))
@@ -203,15 +241,6 @@ func ResolveMLflowPluginInput(pluginsInputString *string) (*MLflowPluginInput, e
 		return nil, util.NewInvalidInputError("plugins_input.mlflow must be a single JSON object")
 	}
 
-	if input.Disabled {
-		return input, nil
-	}
-	if input.ExperimentID != "" {
-		return input, nil
-	}
-	if input.ExperimentName == "" {
-		input.ExperimentName = DefaultExperimentName
-	}
 	return input, nil
 }
 
@@ -233,13 +262,193 @@ func SelectMLflowExperiment(input *MLflowPluginInput, settings *commonmlflow.MLf
 	return "", DefaultExperimentName
 }
 
-// InjectMLflowRuntimeEnv sets KFP_MLFLOW_CONFIG on driver and launcher
-// containers.
-func InjectMLflowRuntimeEnv(executionSpec util.ExecutionSpec, env map[string]string) error {
-	if len(env) == 0 || executionSpec == nil {
+func validateNamespaceOverridePolicy(settings *commonmlflow.MLflowPluginSettings, namespaceCfg *commonmlflow.PluginConfig) error {
+	if settings == nil || namespaceCfg == nil {
 		return nil
 	}
-	return executionSpec.UpsertRuntimeEnvVars(env,
+	endpointOverridden := strings.TrimSpace(namespaceCfg.Endpoint) != ""
+	if namespaceCfg.Settings != nil && namespaceCfg.Settings.WorkspacesEnabled != nil && !endpointOverridden {
+		return fmt.Errorf(
+			"namespace MLflow overrides may set settings.workspacesEnabled only when overriding endpoint in configmap %q/%q",
+			LauncherConfigMapName,
+			LauncherConfigKey,
+		)
+	}
+	if settings.AuthType == commonmlflow.AuthTypeKubernetes && endpointOverridden {
+		return fmt.Errorf(
+			"namespace endpoint override resolves to authType %q, which would reuse API server credentials",
+			commonmlflow.AuthTypeKubernetes,
+		)
+	}
+	if settings.AuthType == commonmlflow.AuthTypeBearer || settings.AuthType == commonmlflow.AuthTypeBasicAuth {
+		if namespaceCfg.Settings == nil || namespaceCfg.Settings.CredentialSecretRef == nil {
+			return fmt.Errorf(
+				"namespace MLflow overrides using authType %q must define settings.credentialSecretRef in configmap %q/%q",
+				settings.AuthType,
+				LauncherConfigMapName,
+				LauncherConfigKey,
+			)
+		}
+	}
+	return nil
+}
+
+func resolveConfiguredCredentials(
+	ctx context.Context,
+	clientSet kubernetes.Interface,
+	namespace string,
+	settings *commonmlflow.MLflowPluginSettings,
+) (commonmlflow.MLflowCredentials, error) {
+	if settings == nil {
+		return commonmlflow.MLflowCredentials{}, util.NewInternalServerError(
+			fmt.Errorf("settings are nil"),
+			"MLflow settings must be provided when resolving credentials",
+		)
+	}
+	switch settings.AuthType {
+	case commonmlflow.AuthTypeKubernetes:
+		return commonmlflow.ResolveMLflowCredentials()
+	case commonmlflow.AuthTypeBearer:
+		if settings.CredentialSecretRef == nil {
+			return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError(
+				"plugins.mlflow.settings.credentialSecretRef is required for authType %q",
+				commonmlflow.AuthTypeBearer,
+			)
+		}
+		return resolveBearerSecretCredentials(ctx, clientSet, namespace, settings.CredentialSecretRef)
+	case commonmlflow.AuthTypeBasicAuth:
+		if settings.CredentialSecretRef == nil {
+			return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError(
+				"plugins.mlflow.settings.credentialSecretRef is required for authType %q",
+				commonmlflow.AuthTypeBasicAuth,
+			)
+		}
+		return resolveBasicAuthSecretCredentials(ctx, clientSet, namespace, settings.CredentialSecretRef)
+	case commonmlflow.AuthTypeNone:
+		return commonmlflow.MLflowCredentials{AuthType: commonmlflow.AuthTypeNone}, nil
+	default:
+		return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError(
+			"unsupported plugins.mlflow.settings.authType %q",
+			settings.AuthType,
+		)
+	}
+}
+
+func resolveBearerSecretCredentials(
+	ctx context.Context,
+	clientSet kubernetes.Interface,
+	namespace string,
+	ref *commonmlflow.CredentialSecretRef,
+) (commonmlflow.MLflowCredentials, error) {
+	if ref == nil {
+		return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError("MLflow bearer auth requires credentialSecretRef")
+	}
+	if ref.TokenKey == "" {
+		return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError(
+			"plugins.mlflow.settings.credentialSecretRef.tokenKey is required for authType %q",
+			commonmlflow.AuthTypeBearer,
+		)
+	}
+	secret, err := getMLflowCredentialSecret(ctx, clientSet, namespace)
+	if err != nil {
+		return commonmlflow.MLflowCredentials{}, err
+	}
+	token, err := readRequiredSecretKey(secret, namespace, ref.TokenKey)
+	if err != nil {
+		return commonmlflow.MLflowCredentials{}, err
+	}
+	return commonmlflow.MLflowCredentials{
+		AuthType:    commonmlflow.AuthTypeBearer,
+		BearerToken: token,
+	}, nil
+}
+
+func resolveBasicAuthSecretCredentials(
+	ctx context.Context,
+	clientSet kubernetes.Interface,
+	namespace string,
+	ref *commonmlflow.CredentialSecretRef,
+) (commonmlflow.MLflowCredentials, error) {
+	if ref == nil {
+		return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError("MLflow basic auth requires credentialSecretRef")
+	}
+	if ref.UsernameKey == "" {
+		return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError(
+			"plugins.mlflow.settings.credentialSecretRef.usernameKey is required for authType %q",
+			commonmlflow.AuthTypeBasicAuth,
+		)
+	}
+	if ref.PasswordKey == "" {
+		return commonmlflow.MLflowCredentials{}, util.NewInvalidInputError(
+			"plugins.mlflow.settings.credentialSecretRef.passwordKey is required for authType %q",
+			commonmlflow.AuthTypeBasicAuth,
+		)
+	}
+	secret, err := getMLflowCredentialSecret(ctx, clientSet, namespace)
+	if err != nil {
+		return commonmlflow.MLflowCredentials{}, err
+	}
+	username, err := readRequiredSecretKey(secret, namespace, ref.UsernameKey)
+	if err != nil {
+		return commonmlflow.MLflowCredentials{}, err
+	}
+	password, err := readRequiredSecretKey(secret, namespace, ref.PasswordKey)
+	if err != nil {
+		return commonmlflow.MLflowCredentials{}, err
+	}
+	return commonmlflow.MLflowCredentials{
+		AuthType: commonmlflow.AuthTypeBasicAuth,
+		Username: username,
+		Password: password,
+	}, nil
+}
+
+// getMLflowCredentialSecret reads the fixed MLflow credentials Secret from the
+// given namespace.
+func getMLflowCredentialSecret(ctx context.Context, clientSet kubernetes.Interface, namespace string) (*corev1.Secret, error) {
+	secret, err := clientSet.CoreV1().Secrets(namespace).Get(ctx, commonmlflow.CredentialSecretName, v1.GetOptions{})
+	if err != nil {
+		return nil, util.NewInternalServerError(
+			err,
+			"failed to read MLflow credentials secret %q in namespace %q",
+			commonmlflow.CredentialSecretName,
+			namespace,
+		)
+	}
+	return secret, nil
+}
+
+// readRequiredSecretKey returns the trimmed value for key from secret, returning
+// an error if the key is missing or resolves to an empty value.
+func readRequiredSecretKey(secret *corev1.Secret, namespace, key string) (string, error) {
+	valueBytes, ok := secret.Data[key]
+	if !ok {
+		return "", util.NewInvalidInputError(
+			"secret %q in namespace %q does not contain key %q",
+			commonmlflow.CredentialSecretName,
+			namespace,
+			key,
+		)
+	}
+	value := strings.TrimSpace(string(valueBytes))
+	if value == "" {
+		return "", util.NewInvalidInputError(
+			"secret %q in namespace %q has an empty value for key %q",
+			commonmlflow.CredentialSecretName,
+			namespace,
+			key,
+		)
+	}
+	return value, nil
+}
+
+// InjectMLflowRuntimeEnv sets KFP_MLFLOW_CONFIG on driver and launcher
+// containers.
+func InjectMLflowRuntimeEnv(executionSpec util.ExecutionSpec, envVars []corev1.EnvVar) error {
+	if len(envVars) == 0 || executionSpec == nil {
+		return nil
+	}
+	return executionSpec.UpsertRuntimeEnvVars(envVars,
 		util.ExecutionRuntimeRoleDriver,
 		util.ExecutionRuntimeRoleLauncher,
 	)
@@ -256,4 +465,16 @@ func ToMLflowTerminalStatus(stateV2 string) string {
 	default:
 		return "FAILED"
 	}
+}
+
+func resolvedMLflowTimeout(pluginConfig *commonmlflow.PluginConfig) time.Duration {
+	defaultTimeout := 30 * time.Second
+	if pluginConfig == nil || pluginConfig.Timeout == "" {
+		return defaultTimeout
+	}
+	timeout, err := time.ParseDuration(pluginConfig.Timeout)
+	if err != nil || timeout <= 0 {
+		return defaultTimeout
+	}
+	return timeout
 }
