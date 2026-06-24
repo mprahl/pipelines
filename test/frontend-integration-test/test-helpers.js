@@ -221,6 +221,65 @@ async function waitForTableRows(
   return await $$(selector);
 }
 
+async function waitForLogViewerText(
+  expectedText,
+  { timeout = defaultTimeout, interval = 1000, screenshotName = 'log-viewer' } = {},
+) {
+  let lastLogsState = 'not-started';
+  let lastViewerText = '';
+  let lastRefreshTimestamp = 0;
+
+  try {
+    await waitForCondition(
+      async () => {
+        if (await isSelectorDisplayed('#logViewer')) {
+          const viewerText = await $('#logViewer').getText();
+          lastViewerText = viewerText;
+          if (!expectedText || viewerText.includes(expectedText)) {
+            lastLogsState = 'viewer-ready';
+            return true;
+          }
+          lastLogsState = viewerText.trim() ? 'viewer-missing-expected-text' : 'viewer-empty';
+        }
+
+        const logsFetchFailed = await pageContainsText('Failed to retrieve pod logs.');
+        if (logsFetchFailed && Date.now() - lastRefreshTimestamp >= interval) {
+          const refreshButton = await $('button=Refresh');
+          if (
+            (await refreshButton.isExisting()) &&
+            (await refreshButton.isDisplayed()) &&
+            (await refreshButton.isEnabled())
+          ) {
+            lastLogsState = 'refreshing-log-fetch';
+            lastRefreshTimestamp = Date.now();
+            await refreshButton.click();
+            return false;
+          }
+        }
+
+        if (await isSelectorDisplayed('[role="progressbar"]')) {
+          lastLogsState = 'loading-log-viewer';
+        }
+
+        return false;
+      },
+      {
+        timeout,
+        interval,
+        timeoutMsg: expectedText
+          ? `expected log viewer to contain ${expectedText}`
+          : 'expected log viewer to become ready',
+      },
+    );
+  } catch (error) {
+    console.log('LOG_VIEWER_LAST_STATE', lastLogsState);
+    console.log('LOG_VIEWER_LAST_TEXT', lastViewerText.slice(0, 500));
+    console.log('LOG_VIEWER_URL', await browser.getUrl());
+    await saveDebugScreenshot(screenshotName);
+    throw error;
+  }
+}
+
 function annotatePhaseError(phaseName, error) {
   if (error instanceof Error) {
     error.message = `[${phaseName}] ${error.message}`;
@@ -260,6 +319,7 @@ module.exports = {
   waitForCondition,
   waitForGraphNodeCount,
   waitForHashPrefix,
+  waitForLogViewerText,
   waitForRunPageReady,
   waitForTableRows,
 };
