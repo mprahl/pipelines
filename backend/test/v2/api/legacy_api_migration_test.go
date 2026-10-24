@@ -94,6 +94,7 @@ var _ = Describe("Legacy API coverage migration", Label(constants.APIServerTests
 			ExecutorType:         run.ExecutorType,
 			WorkspaceProvisioner: run.WorkspaceProvisioner,
 			WorkspaceDescription: run.WorkspaceDescription,
+			RuntimeConfig:        run.RuntimeConfig,
 		}
 		Expect(terminated).To(Equal(expected))
 	})
