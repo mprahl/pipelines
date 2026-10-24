@@ -28,6 +28,31 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class V2DeploymentContractTest(unittest.TestCase):
+    def test_api_lanes_forward_only_after_fixture_rollouts(self):
+        workflow = yaml.safe_load(
+            (ROOT / '.github/workflows/api-server-tests.yml').read_text()
+        )
+        checked = 0
+        for job_name, job in workflow['jobs'].items():
+            steps = job.get('steps', [])
+            if not any(
+                step.get('uses') == './.github/actions/test-and-report'
+                for step in steps
+            ):
+                continue
+            for step in steps:
+                if step.get('uses') != './.github/actions/deploy':
+                    continue
+                checked += 1
+                with self.subTest(job=job_name):
+                    self.assertEqual(
+                        step.get('with', {}).get('forward_port'),
+                        'false',
+                        'The test action must own API forwarding after its '
+                        'fixture rollout, without an older deploy-time listener.',
+                    )
+        self.assertGreater(checked, 0)
+
     def test_tls_lanes_read_the_certificate_secret(self):
         certificate = yaml.safe_load(
             (
