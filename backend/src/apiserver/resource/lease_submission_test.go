@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -93,6 +94,10 @@ func TestKubernetesSubmissionCannotOverwriteAClaimedRun(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, observed.creates)
+	require.NotEmpty(t, created.PipelineRoot, "the resolved root must be persisted before lease acquisition")
+	var parameters map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(created.RuntimeConfig.Parameters), &parameters))
+	require.Equal(t, "world", parameters["text"])
 	require.Equal(t, model.RuntimeStateRunning, created.State, "API initialization must not overwrite the new owner's progress")
 	manifest, err := pocruntime.ParseManifest(string(created.PipelineRuntimeManifest))
 	require.NoError(t, err)
